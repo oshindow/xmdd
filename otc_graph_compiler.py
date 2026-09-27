@@ -22,9 +22,6 @@ from typing import List, Union
 import k2
 import torch
 
-from utils import str2bool
-
-
 class OtcTrainingGraphCompiler(object):
     def __init__(
         self,
@@ -100,8 +97,8 @@ class OtcTrainingGraphCompiler(object):
     def compile(
         self,
         texts: List[str],
-        allow_bypass_arc: str2bool = True,
-        allow_self_loop_arc: str2bool = True,
+        allow_bypass_arc: bool = True,
+        allow_self_loop_arc: bool = True,
         bypass_weight: float = 0.0,
         self_loop_weight: float = 0.0,
         word_ids_list: List[List] = None,
@@ -156,8 +153,8 @@ class OtcTrainingGraphCompiler(object):
         self,
         texts: List[str],
         otc_token: str,
-        allow_bypass_arc: str2bool = True,
-        allow_self_loop_arc: str2bool = True,
+        allow_bypass_arc: bool = True,
+        allow_self_loop_arc: bool = True,
         bypass_weight: float = 0.0,
         self_loop_weight: float = 0.0,
         word_ids_list: List[List] = None,

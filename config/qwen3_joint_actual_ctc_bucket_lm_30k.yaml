@@ -1,0 +1,76 @@
+experiment:
+  name: qwen3_joint_actual_ctc_bucket_lm_30k
+  output_root: /data2/xintong/checkpoints/qwen3_joint_actual_ctc_bucket_lm_30k
+  seed: 42
+  resume: auto
+
+data:
+  train_path: data/jsonl_actual_split/train.jsonl
+  val_path: data/jsonl_actual_split/dev.jsonl
+  data_root: /data2/xintong/mandarin_accent
+  audio_field: l2_wav
+  actual_phone_field: actual_phones
+  token_table_path: data/lang_jsonl/tokens.txt
+  sample_rate: 16000
+  remove_phones: [sil]
+  actual_target_prefix: "language Chinese<asr_text>"
+  system_prompt: ""
+
+model:
+  name: Qwen/Qwen3-ASR-0.6B-hf
+  initialization: pretrained
+  dtype: bfloat16
+  attention_implementation: flash_attention_2
+  gradient_checkpointing: true
+  use_cache: false
+  local_files_only: true
+  audio_encoder:
+    # The code also enforces this invariant: conv2d1/2/3 are always frozen.
+    freeze_conv_frontend: true
+
+loss:
+  lm_weight: 1.0
+  ctc_weight: 0.3
+  tone_weight: 0.05
+  tone_start_step: 10000
+  tone_ramp_steps: 2000
+
+contrastive:
+  temperature: 0.1
+  cross_accent_weight: 2.0
+
+training:
+  accelerator: gpu
+  devices: 4
+  strategy: ddp_find_unused_parameters_true
+  precision: bf16-mixed
+  per_device_batch_size: 4
+  gradient_accumulation_steps: 3
+  workers: 4
+  max_steps: 30000
+  eval_steps: 1000
+  logging_steps: 20
+  gradient_clip_val: 1.0
+  learning_rates:
+    aut: 5.0e-6
+    ctc_head: 5.0e-5
+    audio_projector: 2.0e-5
+    lm_decoder: 1.0e-5
+  optimizer:
+    name: AdamW
+    betas: [0.9, 0.98]
+    epsilon: 1.0e-8
+    weight_decay: 0.01
+  schedule:
+    aut_start_step: 3000
+    aut_ramp_steps: 3000
+    head_warmup_steps: 3000
+    projector_warmup_steps: 1000
+    lm_warmup_steps: 1000
+  checkpointing:
+    monitor: val/actual_per
+    filename: "step={step:06d}-lmper={val/actual_per:.4f}-ctcper={val/ctc_per:.4f}"
+    save_top_k: 3
+
+evaluation:
+  max_new_tokens: 256

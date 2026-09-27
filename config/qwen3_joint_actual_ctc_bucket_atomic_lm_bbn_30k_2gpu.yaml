@@ -1,0 +1,102 @@
+experiment:
+  name: qwen3_joint_actual_ctc_bucket_atomic_lm_bbn_30k_2gpu
+  output_root: /data2/xintong/checkpoints/qwen3_joint_actual_ctc_bucket_atomic_lm_bbn_30k_2gpu
+  seed: 42
+  resume: auto
+
+data:
+  train_path: data/jsonl_actual_split/train.jsonl
+  val_path: data/jsonl_actual_split/dev.jsonl
+  data_root: /data2/xintong/mandarin_accent
+  audio_field: l2_wav
+  actual_phone_field: actual_phones
+  token_table_path: data/lang_jsonl/tokens.txt
+  sample_rate: 16000
+  remove_phones: [sil]
+  lm_phone_token_exclude: ["<blk>", "<sos/eos>", "<unk>", sil]
+  actual_target_prefix: "language Chinese<asr_text>"
+  system_prompt: ""
+
+model:
+  name: Qwen/Qwen3-ASR-0.6B-hf
+  initialization: pretrained
+  dtype: bfloat16
+  attention_implementation: flash_attention_2
+  gradient_checkpointing: true
+  use_cache: false
+  local_files_only: true
+  audio_encoder:
+    freeze_conv_frontend: true
+
+loss:
+  lm_weight: 1.0
+  ctc_weight: 0.3
+  tone_weight: 0.0
+  tone_start_step: 0
+  tone_ramp_steps: 1
+
+two_branch:
+  balanced_lm_weight: 0.5
+  balanced_alpha_start: 0.2
+  balanced_alpha_peak: 0.5
+  balanced_alpha_ramp_steps: 9000
+  natural_finish_steps: 3000
+  balanced_alpha_finish: 0.25
+  weighted_sampler:
+    power: 0.5
+    aggregation: max
+    max_weight_ratio: 5.0
+  augmentation:
+    probability: 0.8
+    gain_db: 3.0
+    noise_snr_db: [20.0, 35.0]
+
+balanced_contrastive:
+  weight: 0.05
+  start_step: 3000
+  ramp_steps: 3000
+  temperature: 0.1
+  max_positives: 5
+  max_hard_negatives: 10
+  max_other_negatives: 10
+
+contrastive:
+  temperature: 0.1
+  cross_accent_weight: 2.0
+
+training:
+  accelerator: gpu
+  devices: 2
+  strategy: ddp_find_unused_parameters_true
+  precision: bf16-mixed
+  per_device_batch_size: 2
+  # 2 branches x 2 examples x 2 GPUs x 3 = 24 utterance exposures/update.
+  gradient_accumulation_steps: 3
+  workers: 4
+  max_steps: 30000
+  eval_steps: 1000
+  logging_steps: 20
+  gradient_clip_val: 1.0
+  learning_rates:
+    aut: 5.0e-6
+    ctc_head: 5.0e-5
+    audio_projector: 2.0e-5
+    lm_decoder: 1.0e-5
+  optimizer:
+    name: AdamW
+    betas: [0.9, 0.98]
+    epsilon: 1.0e-8
+    weight_decay: 0.01
+  schedule:
+    aut_start_step: 3000
+    aut_ramp_steps: 3000
+    head_warmup_steps: 3000
+    projector_warmup_steps: 1000
+    lm_warmup_steps: 1000
+  checkpointing:
+    monitor: val/actual_per
+    filename: "step={step:06d}-lmper={val/actual_per:.4f}-ctcper={val/ctc_per:.4f}"
+    save_top_k: 3
+
+evaluation:
+  max_new_tokens: 256

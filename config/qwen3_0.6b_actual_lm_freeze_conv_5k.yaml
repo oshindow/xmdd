@@ -1,0 +1,88 @@
+# Qwen3-ASR-0.6B actual-phone LM: freeze only the three Conv2d frontend layers.
+experiment:
+  name: qwen3_asr_0.6b_actual_lm_freeze_conv_5k
+  output_root: /data2/xintong/checkpoints/qwen3_asr_0.6b_actual_lm_freeze_conv_5k
+  seed: 42
+  resume: auto
+
+data:
+  train_path: data/jsonl_actual_split/train.jsonl
+  val_path: data/jsonl_actual_split/dev.jsonl
+  data_root: /data2/xintong/mandarin_accent
+  audio_field: l2_wav
+  actual_phone_field: actual_phones
+  token_table_path: data/lang_jsonl/tokens.txt
+  sample_rate: 16000
+  remove_phones: [sil]
+  actual_target_prefix: "language Chinese<asr_text>"
+  system_prompt: ""
+  f0:
+    enabled: false
+  specaugment:
+    enabled: false
+
+model:
+  name: Qwen/Qwen3-ASR-0.6B-hf
+  initialization: pretrained
+  full_parameter_sft: false
+  dtype: bfloat16
+  attention_implementation: flash_attention_2
+  gradient_checkpointing: true
+  use_cache: false
+  local_files_only: false
+  audio_encoder:
+    layers: 18
+    hidden_size: 896
+    frozen: false
+    freeze_conv_frontend: true
+  audio_projector:
+    frozen: false
+  causal_lm:
+    layers: 28
+    hidden_size: 1024
+    frozen: false
+
+loss:
+  objective: actual_phone_lm_cross_entropy
+  target_field: actual_phones
+  auxiliary_losses: []
+
+training:
+  accelerator: gpu
+  devices: 4
+  strategy: ddp_find_unused_parameters_false
+  precision: bf16-mixed
+  per_device_batch_size: 4
+  gradient_accumulation_steps: 3
+  effective_global_batch_size: auto
+  workers: 4
+  epochs: 22
+  max_steps: 5000
+  eval_steps: 500
+  logging_steps: 20
+  gradient_clip_val: 1.0
+  optimizer:
+    name: AdamW
+    learning_rate: 2.0e-5
+    betas: [0.9, 0.999]
+    epsilon: 1.0e-8
+    weight_decay: 0.0
+  scheduler:
+    name: linear
+    warmup_ratio: 0.02
+    decay_to_zero: true
+  checkpointing:
+    monitor: val/actual_per
+    mode: min
+    filename: "step={step:06d}-per={val/actual_per:.4f}"
+    save_top_k: 3
+    save_last: true
+
+evaluation:
+  max_new_tokens: 256
+  primary_checkpoint_metric: val/actual_per
+
+launcher:
+  python: /home/xintong/miniconda3/envs/qwen3_omni/bin/python
+  cuda_visible_devices: "0,1,2,3"
+  flash_attention_required: true

@@ -15,16 +15,20 @@ sys.path.insert(0, str(ROOT))
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torch.nn as nn
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from sklearn.metrics import silhouette_score
 from torch.utils.data import DataLoader, Subset
 
 from scripts.baseline.finetuning_pinyin_ctc_qwen3 import (
+    PhoneTable,
     Qwen3CTCModule,
     QwenCollator,
     QwenCTCDataset,
+    load_audio_encoder,
 )
+from scripts.train_qwen3_aut_kmeans_infonce import encode_hidden
 
 
 TONES = "12345"
@@ -84,6 +88,10 @@ def ctc_viterbi(log_probs, targets, blank=0):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--checkpoint-format", choices=["ctc", "joint"], default="ctc")
+    parser.add_argument("--model-name", default="Qwen/Qwen3-ASR-0.6B-hf")
+    parser.add_argument("--token-table-path", default="data/lang_jsonl/tokens.txt")
+    parser.add_argument("--local-files-only", action="store_true")
     parser.add_argument("--manifest", default="data/jsonl_actual_split/train.jsonl")
     parser.add_argument("--data-root", default="/data2/xintong/datasets/datasets")
     parser.add_argument("--audio-field", default="l2_wav",
@@ -171,15 +179,43 @@ def main():
         )
 
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=True, mmap=True)
-    model_args = argparse.Namespace(**checkpoint["hyper_parameters"])
-    model = Qwen3CTCModule(model_args)
-    model.load_state_dict(checkpoint["state_dict"], strict=True)
+    if args.checkpoint_format == "ctc":
+        model_args = argparse.Namespace(**checkpoint["hyper_parameters"])
+        model = Qwen3CTCModule(model_args)
+        model.load_state_dict(checkpoint["state_dict"], strict=True)
+        collator_model_name = model_args.model_name
+    else:
+        class JointCTCView(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.encoder = load_audio_encoder(
+                    args.model_name, local_files_only=args.local_files_only)
+                self.phones = PhoneTable(args.token_table_path)
+                self.ctc_head = nn.Linear(self.encoder.config.d_model, len(self.phones))
+
+            def encode_hidden(self, features, feature_mask):
+                return encode_hidden(self.encoder, features, feature_mask)
+
+        model = JointCTCView()
+        state = checkpoint["state_dict"]
+        selected = {}
+        for name, value in state.items():
+            if name.startswith("asr.model.audio_tower."):
+                selected["encoder." + name[len("asr.model.audio_tower."):]] = value
+            elif name.startswith("ctc_head."):
+                selected[name] = value
+        missing, unexpected = model.load_state_dict(selected, strict=False)
+        if missing or unexpected:
+            raise RuntimeError(f"Joint CTC load mismatch: missing={missing[:5]}, unexpected={unexpected[:5]}")
+        print(f"Loaded joint AuT + CTC head: {len(selected)} tensors", flush=True)
+        collator_model_name = args.model_name
     model.eval()
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
     loader = DataLoader(
         Subset(dataset, selected_indices), batch_size=args.batch_size,
-        num_workers=args.num_workers, collate_fn=QwenCollator(model_args.model_name),
+        num_workers=args.num_workers, collate_fn=QwenCollator(
+            collator_model_name, local_files_only=args.local_files_only),
         pin_memory=device.type == "cuda",
     )
 
@@ -245,7 +281,8 @@ def main():
                 for phone in ordered_phones for row in metadata[phone]), encoding="utf-8"
     )
     summary = {
-        "checkpoint": args.checkpoint, "manifest": args.manifest,
+        "checkpoint": args.checkpoint, "checkpoint_format": args.checkpoint_format,
+        "manifest": args.manifest,
         "audio_field": args.audio_field, "audio_root": args.audio_root,
         "phone_field": args.phone_field,
         "selected_finals": selected_finals, "corpus_counts": corpus_counts,

@@ -12,6 +12,8 @@ thumbs.db
 .github/workflows/
 
 data/*
+!data/lang_jsonl_otc/
+!data/lang_jsonl_otc/tokens_otc.txt
 !data/lang_whisper/
 data/lang_whisper/*
 !data/lang_whisper/lexicon_add_plus_new.txt

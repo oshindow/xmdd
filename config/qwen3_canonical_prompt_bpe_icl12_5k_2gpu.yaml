@@ -1,0 +1,95 @@
+experiment:
+  name: qwen3_canonical_prompt_bpe_icl12_5k_2gpu
+  output_root: /data2/xintong/checkpoints/qwen3_canonical_prompt_bpe_icl12_5k_2gpu
+  seed: 42
+  resume: false
+
+data:
+  train_path: data/jsonl_actual_split/train.jsonl
+  val_path: data/jsonl_actual_split/dev.jsonl
+  data_root: /data2/xintong/mandarin_accent
+  audio_field: l2_wav
+  actual_phone_field: actual_phones
+  canonical_phone_field: canonical_phones
+  canonical_audio_root: /data2/xintong/datasets/cosyvoice3/cosyvoice3
+  canonical_log_glob: logs/*.jsonl
+  token_table_path: data/lang_jsonl/tokens.txt
+  sample_rate: 16000
+  remove_phones: [sil]
+  actual_target_prefix: "language Chinese<asr_text>"
+  system_prompt: ""
+
+icl:
+  max_shots: 12
+  stage1_steps: 1000
+  stage1_shot_values: [0, 1, 2, 3]
+  stage1_shot_probabilities: [0.30, 0.35, 0.25, 0.10]
+  shot_values: [0, 1, 2, 3, 4, 6, 8, 12]
+  shot_probabilities: [0.20, 0.25, 0.20, 0.15, 0.10, 0.05, 0.03, 0.02]
+  validation_shots_list: [0, 1, 4, 12]
+  validation_score_weights: [0.4, 0.3, 0.2, 0.1]
+  selection_seed: 42
+  demo_format: full_paired
+  demo_selection: same_speaker_then_same_accent_then_random
+  supervise_demo_answers: false
+
+model:
+  name: Qwen/Qwen3-ASR-0.6B-hf
+  initialization: pretrained
+  dtype: bfloat16
+  attention_implementation: flash_attention_2
+  gradient_checkpointing: true
+  use_cache: false
+  local_files_only: true
+  audio_encoder:
+    freeze_conv_frontend: true
+
+loss:
+  lm_weight: 1.0
+  l2_ctc_weight: 0.0
+  canonical_ctc_weight: 0.0
+  ctc_weight: 0.0
+  tone_weight: 0.0
+  tone_start_step: 0
+  tone_ramp_steps: 1
+
+training:
+  accelerator: gpu
+  devices: 2
+  strategy: ddp_find_unused_parameters_false
+  precision: bf16-mixed
+  per_device_batch_size: 1
+  # 1 query x 2 GPUs x 24 accumulation = the original effective query batch 48.
+  gradient_accumulation_steps: 24
+  workers: 4
+  sampler:
+    name: distributed_random
+    shuffle: true
+    seed: 42
+    sampler_drop_last: false
+    batch_drop_last: true
+  max_steps: 5000
+  eval_steps: 500
+  logging_steps: 20
+  gradient_clip_val: 1.0
+  optimizer:
+    name: AdamW
+    learning_rate: 2.0e-5
+    betas: [0.9, 0.999]
+    epsilon: 1.0e-8
+    weight_decay: 0.0
+  learning_rates:
+    aut: 5.0e-6
+    lm_projector: 2.0e-5
+  scheduler:
+    name: linear
+    warmup_ratio: 0.02
+    aut_warmup_steps: 100
+    decay_to_zero: true
+  checkpointing:
+    monitor: val/icl_score
+    filename: "step={step:06d}-iclscore={val/icl_score:.4f}"
+    save_top_k: 3
+
+evaluation:
+  max_new_tokens: 256

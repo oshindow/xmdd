@@ -41,7 +41,7 @@ def _qwen_imports():
     return AutoConfig, AutoFeatureExtractor, Qwen3ASREncoder
 
 
-def load_audio_encoder(model_id: str):
+def load_audio_encoder(model_id: str, local_files_only: bool = False):
     """Load only model.audio_tower.* tensors; never instantiate the text model."""
     AutoConfig, _, Qwen3ASREncoder = _qwen_imports()
     try:
@@ -50,11 +50,12 @@ def load_audio_encoder(model_id: str):
     except ImportError as exc:
         raise RuntimeError("huggingface_hub and safetensors are required") from exc
 
-    config = AutoConfig.from_pretrained(model_id)
+    config = AutoConfig.from_pretrained(model_id, local_files_only=local_files_only)
     encoder = Qwen3ASREncoder(config.audio_config)
     snapshot = Path(snapshot_download(
         model_id,
         allow_patterns=["config.json", "model*.safetensors"],
+        local_files_only=local_files_only,
     ))
     tensor_files = sorted(snapshot.glob("model*.safetensors"))
     if not tensor_files:
@@ -152,9 +153,10 @@ class QwenCTCDataset(Dataset):
 
 
 class QwenCollator:
-    def __init__(self, model_id: str, use_f0: bool = False):
+    def __init__(self, model_id: str, use_f0: bool = False, local_files_only: bool = False):
         _, AutoFeatureExtractor, _ = _qwen_imports()
-        self.extractor = AutoFeatureExtractor.from_pretrained(model_id)
+        self.extractor = AutoFeatureExtractor.from_pretrained(
+            model_id, local_files_only=local_files_only)
         self.chunk_size = self.extractor.n_window * 2
         self.use_f0 = use_f0
 
@@ -322,9 +324,25 @@ class Qwen3CTCModule(LightningModule):
         )
         self.encoder.layers[0].register_forward_pre_hook(augmenter, with_kwargs=True)
         self.ctc_loss = nn.CTCLoss(blank=0, reduction="mean", zero_infinity=True)
+        self.otc_graph_compiler = None
         self.register_buffer("val_errors", torch.tensor(0, dtype=torch.long), persistent=False)
         self.register_buffer("val_phones", torch.tensor(0, dtype=torch.long), persistent=False)
         self.register_buffer("val_f0_stats", torch.zeros(3, dtype=torch.float64), persistent=False)
+
+    def on_fit_start(self):
+        if not self.args.otc:
+            return
+        try:
+            from otc_graph_compiler import OtcTrainingGraphCompiler
+        except ImportError as exc:
+            raise RuntimeError(
+                "--otc requires k2 in the Qwen3 training environment"
+            ) from exc
+        self.otc_graph_compiler = OtcTrainingGraphCompiler(
+            Path(self.args.otc_lang_dir), "<star>", self.device,
+            self.args.otc_bypass_weight, self.args.otc_self_loop_weight,
+            self.args.otc_bypass_decay, self.args.otc_self_loop_decay,
+        )
 
     def encode_hidden(self, features, feature_mask):
         lengths = feature_mask.sum(-1).long()
@@ -388,6 +406,42 @@ class Qwen3CTCModule(LightningModule):
         flat = torch.tensor([x for seq in labels for x in seq], dtype=torch.long, device=self.device)
         lengths = torch.tensor([len(seq) for seq in labels], dtype=torch.long, device=self.device)
         return flat, lengths, labels
+
+    def otc_loss(self, logits, output_lengths, label_sequences):
+        """k2 OTC loss; the extra <star> class is derived from CTC logits."""
+        import k2
+
+        log_probs = logits.float().log_softmax(-1)
+        star = torch.logsumexp(log_probs[:, :, 1:], -1, keepdim=True)
+        star = star - math.log(log_probs.shape[-1] - 1)
+        dense_scores = torch.cat((log_probs, star), -1)
+        phones = [[self.phones.id_to_phone[index] for index in sequence]
+                  for sequence in label_sequences]
+        word_ids = [[[index] for index in sequence] for sequence in label_sequences]
+        bypass_weight = (self.args.otc_bypass_weight
+                         * self.args.otc_bypass_decay ** max(0, self.current_epoch))
+        self_loop_weight = (self.args.otc_self_loop_weight
+                            * self.args.otc_self_loop_decay ** max(0, self.current_epoch))
+        graph = self.otc_graph_compiler.compile(
+            [" ".join(sequence) for sequence in phones], True, True,
+            bypass_weight, self_loop_weight, word_ids,
+        ).to(self.device)
+        batch = logits.shape[0]
+        supervision = torch.stack((
+            torch.arange(batch, dtype=torch.int32),
+            torch.zeros(batch, dtype=torch.int32),
+            output_lengths.detach().to(device="cpu", dtype=torch.int32),
+        ), 1)
+        dense = k2.DenseFsaVec(dense_scores, supervision, allow_truncate=3)
+        target_lengths = torch.tensor(
+            [len(sequence) for sequence in label_sequences],
+            dtype=torch.int32, device=self.device,
+        )
+        return k2.ctc_loss(
+            graph, dense, output_beam=self.args.otc_output_beam,
+            reduction="mean", use_double_scores=True,
+            target_lengths=target_lengths,
+        )
 
     @staticmethod
     @torch.no_grad()
@@ -542,10 +596,13 @@ class Qwen3CTCModule(LightningModule):
             features, mask, optional[0] if optional else None)
         logits = self.ctc_head(hidden)
         targets, target_lengths, label_sequences = self.targets(rows)
-        ctc_loss = self.ctc_loss(
-            logits.log_softmax(-1).transpose(0, 1), targets,
-            output_lengths, target_lengths,
-        )
+        if self.args.otc:
+            ctc_loss = self.otc_loss(logits, output_lengths, label_sequences)
+        else:
+            ctc_loss = self.ctc_loss(
+                logits.log_softmax(-1).transpose(0, 1), targets,
+                output_lengths, target_lengths,
+            )
         tone_weight = self.tone_weight() if self.use_tone_contrastive else 0.0
         if self.use_tone_contrastive and tone_weight > 0.0:
             tone_loss, tone_accuracy, tonal_finals = self.tone_contrastive_loss(
@@ -563,7 +620,11 @@ class Qwen3CTCModule(LightningModule):
             f0_loss = f0_error / f0_count.clamp_min(1)
         loss = ctc_loss + tone_weight * tone_loss + self.f0_loss_weight * f0_loss
         self.log("train/loss", loss, on_step=True, prog_bar=True, logger=True)
-        self.log("train/ctc_loss", ctc_loss, on_step=True, prog_bar=True, logger=True)
+        if self.args.otc:
+            self.log("train/otc_loss", ctc_loss, on_step=True, prog_bar=True, logger=True,
+                     sync_dist=True)
+        else:
+            self.log("train/ctc_loss", ctc_loss, on_step=True, prog_bar=True, logger=True)
         if self.use_f0:
             self.log("train/f0_loss", f0_loss, on_step=True, prog_bar=True,
                      logger=True, sync_dist=True)
@@ -668,6 +729,14 @@ def parse_args():
     parser.add_argument("--token-table-path", default="data/lang_jsonl/tokens.txt")
     parser.add_argument("--model-name", default="Qwen/Qwen3-ASR-0.6B-hf")
     parser.add_argument("--ctc-vocab", type=int, default=188)
+    parser.add_argument("--otc", action="store_true",
+                        help="Replace the training CTC objective with k2 OTC")
+    parser.add_argument("--otc-lang-dir", default="data/lang_jsonl_otc")
+    parser.add_argument("--otc-output-beam", type=float, default=10.0)
+    parser.add_argument("--otc-bypass-weight", type=float, default=-19.0)
+    parser.add_argument("--otc-self-loop-weight", type=float, default=3.75)
+    parser.add_argument("--otc-bypass-decay", type=float, default=0.975)
+    parser.add_argument("--otc-self-loop-decay", type=float, default=0.999)
     parser.add_argument("--exp-dir", default="exp/qwen3_asr_ctc")
     parser.add_argument("--resume-from-checkpoint", default=None,
                         help="Restore training progress, optimizer and scheduler from a Lightning checkpoint")

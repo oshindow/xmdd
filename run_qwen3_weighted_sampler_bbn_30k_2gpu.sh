@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-2,3}"
+export HF_HOME="${HF_HOME:-$SCRIPT_DIR/.cache-qwen3/huggingface}"
+export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/qwen3-weighted-bbn-mpl}"
+export TOKENIZERS_PARALLELISM=false
+exec /home/xintong/miniconda3/envs/qwen3_omni/bin/python \
+  "$SCRIPT_DIR/scripts/train_qwen3_joint_atomic_phone_bbn.py" \
+  --config "$SCRIPT_DIR/config/qwen3_joint_actual_ctc_bucket_atomic_lm_bbn_30k_2gpu.yaml" "$@"

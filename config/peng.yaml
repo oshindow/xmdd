@@ -1,0 +1,322 @@
+# Current repository model, expressed using the user's nested YAML layout.
+# Source of truth: configs/base.yaml, train_ctc.py, data_prep.py, decode.py,
+# mdd_common.py, run_meta.json, and checkpoint-best/{config,preprocessor_config}.json.
+# Peng et al. (INTERSPEECH 2021), adapted to Chinese data and pretrained weights.
+# This is a descriptive export. train_ctc.py still reads flat configs/base.yaml;
+# do not pass this nested file to that trainer without a schema adapter.
+# Disabled modules are explicitly false/disable. null means not applicable.
+
+data:
+  train_path: /home/xintong/wav2vec_ctc/manifests/train.jsonl
+  val_path: /home/xintong/wav2vec_ctc/manifests/dev.jsonl
+  test_manifests:
+    - /home/xintong/wav2vec_ctc/manifests/test_seen.jsonl
+    - /home/xintong/wav2vec_ctc/manifests/test_unseen.jsonl
+  data_root: /data2/xintong/datasets/datasets/
+  audio_field: l2_wav  # Source audio used for training, validation, and testing.
+  sample_rate: 16000
+  train_filter_seconds: [0.3, 20.0]
+  duration_filter_applies_to: [train, dev, test_seen, test_unseen]
+  split:
+    enabled: false  # Training reuses manifests; data_prep.py performs this split.
+    method: source_stratified_conditional_speaker_grouped
+    input_manifest: /home/xintong/wav2vec_ctc/train.jsonl
+    output_dir: /home/xintong/wav2vec_ctc/manifests
+    dev_ratio: 0.03
+    seed: 42
+    speaker_grouping_condition: at_least_5_speakers_and_largest_group_fits_source_dev_target
+    fallback: per_utterance_random
+  path_remapping:
+    - from: /data2/xintong/datasets/datasets/LATIC/WAVE/
+      to: /data2/xintong/LATIC/WAVA/
+  vocabulary:
+    type: actual_phone
+    token_table_path: /home/xintong/wav2vec_ctc/vocab.json
+    token_table_format: json_token_to_id
+    ctc_vocab: 187  # Includes blank/pad and unk; not 188.
+    blank_id: 0
+    blank_token: <pad>
+    unknown_id: 1
+    unknown_token: <unk>
+    silence_labels: [sil]
+    deletion_labels: [null, '<del>']  # null is deletion, not silence.
+    remove_silence_from_targets: true
+    remove_deletions_from_targets: true
+    tone_representation: tonal_final_as_one_phone
+    target_field: actual_phones
+    unknown_phone_policy: map_to_unk
+    skip_empty_targets_in_train_and_dev: true
+  waveform:
+    mono: true
+    channel_reduction: mean
+    normalize: true
+    normalization: per_utterance_zero_mean_unit_variance
+    return_attention_mask: true
+    padding_side: right
+    padding_value: 0.0
+    resample_cache_dir: /data2/xintong/checkpoints/wav2vec2_mdd/wav16k_cache
+  specaugment:
+    enabled: true
+    mask_time_prob: 0.65
+    mask_time_length: 10
+    mask_time_min_masks: 2
+    mask_feature_prob: 0.25
+    mask_feature_length: 64
+    mask_feature_min_masks: 0
+  f0:
+    enabled: false
+    method: disable
+    cache_dir: null
+    f0_cache_dir: null
+    extraction_jobs: 0
+    frame_period_ms: null
+    floor_hz: null
+    ceil_hz: null
+    input_domain: disable
+    input_features: []
+    normalization:
+      enabled: false
+      method: disable
+      statistics_source: disable
+      applied_to: disable
+    interpolation:
+      enabled: false
+      method: disable
+      applied_to: disable
+    target:
+      representation: disable
+      is_log: false
+      uses_normalized_contour: false
+    loss_mask: disable
+    encoder_time_alignment:
+      contour_method: disable
+      voiced_flag_method: disable
+
+model:
+  audio_encoder:
+    architecture: wav2vec2_large_24layer_transformer
+    model_name: TencentGameMate/chinese-wav2vec2-large
+    local_snapshot: /home/xintong/.cache/huggingface/hub/models--TencentGameMate--chinese-wav2vec2-large/snapshots/6e3d224a0a7e42a0dc86a66e21a2c245dbb8dfed
+    local_files_only: false  # from_pretrained does not enforce local-only loading.
+    pretrained: true
+    hidden_size: 1024
+    transformer_layers: 24
+    attention_heads: 16
+    intermediate_size: 4096
+    activation: gelu
+    convolutional_feature_encoder_frozen: true  # Entire training run.
+    layerdrop: 0.0
+    hidden_dropout: 0.1
+    attention_dropout: 0.0
+    activation_dropout: 0.1
+    feature_projection_dropout: 0.0
+    final_dropout: 0.1  # Applied immediately before lm_head, once.
+    feature_extractor_normalization: layer
+    stable_layer_norm: true
+    layer_norm_epsilon: 1.0e-5
+    initializer_range: 0.02
+    convolutional_layers: 7
+    conv_dim: [512, 512, 512, 512, 512, 512, 512]
+    conv_kernel: [10, 3, 3, 3, 3, 2, 2]
+    conv_stride: [5, 2, 2, 2, 2, 2, 2]
+    conv_bias: true
+    positional_conv_kernel: 128
+    positional_conv_groups: 16
+    gradient_checkpointing: false
+    adapter_enabled: false
+    weighted_layer_sum: false
+  f0_encoder:
+    enabled: false
+    architecture: disable
+  f0_fusion:
+    enabled: false
+    architecture: disable
+  ctc_otc_head:
+    enabled: true  # The shared schema slot contains plain CTC; OTC is disabled.
+    objective: ctc
+    implementation: Wav2Vec2ForCTC.lm_head
+    architecture: linear
+    input_source_layer: 24
+    input_dim: 1024
+    output_dim: 187
+    activation: null
+    layer_norm: false
+    dropout: 0.0  # No extra dropout inside linear head; final_dropout above is 0.1.
+    initialization: normal_with_wav2vec2_initializer_range
+    target_field: actual_phones
+  f0_prediction_head:
+    enabled: false
+    architecture: disable
+  otc:
+    enabled: false
+    otc_token_table_path: null
+    otc_token: null
+    otc_token_id: null
+    otc_probability: disable
+    allow_bypass_arc: false
+    allow_self_loop_arc: false
+    initial_bypass_weight: 0.0
+    initial_self_loop_weight: 0.0
+    bypass_weight_decay: null
+    self_loop_weight_decay: null
+    otc_beam_size: null
+    reduction: disable
+    use_double_scores: false
+    dense_fsa_dtype: disable
+    sort_batch_by_output_length: disable
+  dual_layer_ctc:
+    enabled: false
+    actual_source_layer: null
+    actual_target_field: null
+    actual_loss_weight: 0.0
+    canonical_source_layer: null
+    canonical_target_field: null
+    canonical_loss_weight: 0.0
+
+training:
+  exp_dir: /data2/xintong/checkpoints/wav2vec2_mdd/chinese-w2v2-large-ctc/seed42
+  resume_from_checkpoint: auto_latest_numeric_checkpoint_if_present
+  seed: 42
+  devices: 4  # run.sh default; can be overridden by NGPU.
+  strategy: ddp_find_unused_parameters_false
+  precision: 16-mixed
+  workers: 6
+  batch_size: 4
+  eval_batch_size: 4
+  gradient_accumulation_steps: 3
+  effective_global_batch_size: 48  # 4 devices * 4 utterances * 3 accumulation.
+  max_steps: 30000
+  eval_steps: 1000
+  logging_steps: 50
+  gradient_clip:
+    value: 1.0
+    algorithm: norm
+  optimizer:
+    name: adamw
+    learning_rate: 5.0e-5
+    betas: [0.9, 0.98]
+    adam_epsilon: 1.0e-8
+    weight_decay: 0.0
+  scheduler:
+    name: per_parameter_group_lambda_lr
+    interval: step
+    freeze_backbone_steps: 10000
+    freeze_implementation: zero_learning_rate_for_trainable_backbone_group
+    backbone_ramp_steps: 3000
+    head_warmup_steps: 3000
+    decay_to_zero_at_step: 30000
+    # These formulas, not a generic linear scheduler, describe build_optim().
+    head_multiplier: 's/3000 if s<3000 else max(0,(30000-s)/27000)'
+    backbone_multiplier: '0 if s<10000 else min(1,(s-10000)/3000)*max(0,(30000-s)/20000)'
+    convolutional_encoder_unfreezes: false
+  loss:
+    name: ctc
+    reduction: mean
+    zero_infinity: true
+    blank_id: 0
+    label_padding_id: -100
+    target_field: actual_phones
+  loss_weights:
+    ctc: 1.0
+    otc: 0.0
+    f0_loss_weight: 0.0
+    tone_maximum: 0.0
+  sampler:
+    method: length_grouped
+    distributed: true
+    length_field: n_samples
+    implementation: custom_LenGroupedTrainer
+  checkpointing:
+    monitor: eval_per
+    mode: min
+    save_steps: 1000
+    save_total_limit: 2
+    save_top_k: null  # HF retention is not Lightning save_top_k.
+    save_last: false  # No separate named last checkpoint; numbered saves are used.
+    save_on_train_epoch_end: false
+    load_best_model_at_end: true
+    best_export_subdir: checkpoint-best
+  logging:
+    backend: tensorboard
+
+contrastive_learning:
+  enabled: false
+  tone_contrastive: false
+  tone_acoustic_only: false
+  objective: disable
+  alignment_before_start: disable
+  alignment_after_start: disable
+  mfa_alignment_dir: null
+  positive_definition: disable
+  negative_definition: disable
+  sampler:
+    final_bucket_sampling: false
+    pool_batches: 0
+    groups_by: disable
+    length_locality: false
+  tone_loss_weight: 0.0
+  tone_temperature: null
+  tone_start_step: null
+  tone_ramp_steps: 0
+  tone_cross_accent_weight: 0.0
+  embedding_source: disable
+
+inference:
+  checkpoint: /data2/xintong/checkpoints/wav2vec2_mdd/chinese-w2v2-large-ctc/seed42/checkpoint-best
+  decoding: greedy_ctc
+  batch_size: 8
+  precision_on_cuda: float16
+  collapse_repeated_tokens: true
+  remove_blank: true
+  language_model: false
+  forced_alignment: false
+  threshold_search: false
+  output_dir: /home/xintong/wav2vec_ctc/manifests
+
+evaluation:
+  separate_test_splits: true
+  per_reference: human_spoken_actual_phones_without_silence_or_deletion_markers
+  canonical_human_alignment: provided_position_aligned_lists
+  canonical_prediction_alignment: levenshtein
+  alignment_tie_break: [match, substitution, deletion, insertion]
+  extra_insertions_count_in_per: true
+  extra_insertions_count_in_canonical_mdd_slots: false
+  metrics: [PER, FRR, FAR, Precision, Recall, F1, DER]
+  counts: [TA, FA, FN, TN, CD]
+  count_aliases:
+    FN: false_rejection
+    TN: true_rejection
+  output_dir: /home/xintong/wav2vec_ctc/reports
+
+provenance:
+  paper: peng21e_interspeech
+  model_scope: current_repository_chinese_adaptation
+  native_training_config: configs/base.yaml
+  nested_config_directly_supported_by_trainer: false
+  actual_run_metadata: /data2/xintong/checkpoints/wav2vec2_mdd/chinese-w2v2-large-ctc/seed42/run_meta.json
+  # Additions beyond the user's template; all describe existing implementation.
+  fields_added_beyond_user_template:
+    - data.raw_audio_field
+    - data.prepared_audio_field
+    - data.duration_filter_applies_to
+    - data.path_remapping
+    - data.waveform
+    - data.vocabulary.deletion_labels
+    - data.vocabulary.unknown_id
+    - data.specaugment.mask_time_min_masks
+    - data.specaugment.mask_feature_min_masks
+    - model.audio_encoder.conv_dim
+    - model.audio_encoder.conv_kernel
+    - model.audio_encoder.conv_stride
+    - model.audio_encoder.positional_conv_kernel
+    - model.audio_encoder.positional_conv_groups
+    - model.ctc_otc_head.objective
+    - model.ctc_otc_head.input_source_layer
+    - training.loss
+    - training.sampler
+    - training.scheduler.head_multiplier
+    - training.scheduler.backbone_multiplier
+    - training.checkpointing.save_total_limit
+    - training.logging
+    - inference
+    - evaluation
