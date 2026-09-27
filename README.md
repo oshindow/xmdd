@@ -7,6 +7,8 @@
 
 Official implementation of **Whisper-Pinyin**, a Pinyin-level speech model for Mandarin speech assessment.
 
+> **Qwen3-ASR 中英双语 ICL MDD（canonical dropout 版本）的环境、数据、模型准备与训练步骤见 [README_ZH_EN_ICL.md](README_ZH_EN_ICL.md)。**
+
 ## Results
 
 <table>
