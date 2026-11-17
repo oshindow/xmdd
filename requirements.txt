@@ -1,23 +1,13 @@
-# Whisper-Pinyin reference environment.
-# Requires Python >=3.8. The pinned CUDA stack below matches CUDA 11.8 + torch 2.0.0.
-
---extra-index-url https://download.pytorch.org/whl/cu118
--f https://k2-fsa.github.io/k2/installation/pre-compiled-cuda-wheels-linux/2.0.0.html
-
-torch==2.0.0+cu118
-torchaudio==2.0.1+cu118
-
-k2==1.24.4.dev20250304+cuda11.8.torch2.0.0
-transformers==4.46.3
-
-lhotse @git+https://github.com/lhotse-speech/lhotse
-
-kaldialign
-tiktoken
-numba
-lightning_utilities
-torchmetrics
-einops
-tensorboard
-pyworld==0.3.5
+# Install torch/torchaudio for your CUDA first, e.g.
+#   pip install torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121
+# then:
+#   pip install -r requirements.txt --no-build-isolation
+# (flash-attn compiles against the installed torch; prebuilt wheels:
+#  https://github.com/Dao-AILab/flash-attention/releases)
+transformers==5.16.1   # native Qwen3-ASR needs >= 5.13
+huggingface_hub==1.30.0
+safetensors==0.8.0
 PyYAML==6.0.3
+numpy==2.4.6
+soundfile==0.14.0
+flash-attn==2.8.3.post1

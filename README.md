@@ -1,176 +1,106 @@
-# 🎧 Whisper-Pinyin
+# X-MDD
 
-[![Python](https://img.shields.io/badge/python-3.8-blue.svg)](https://www.python.org/)
-[![PyTorch](https://img.shields.io/badge/pytorch-2.0.0%2Bcu118-ee4c2c.svg)](https://pytorch.org/)
-[![k2](https://img.shields.io/badge/k2-1.24.4.dev20250304-green.svg)](https://github.com/k2-fsa/k2)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+**X-MDD: LLM-Based Mispronunciation Detection and Diagnosis for Unseen Languages with Canonical References**
+Xintong Wang, Junchuan Zhao, Ye Wang (National University of Singapore)
+[[Paper]](https://arxiv.org/abs/2610.23079) [[Model]](https://huggingface.co/walston/X-MDD)
 
-Official implementation of **Whisper-Pinyin**, a Pinyin-level speech model for Mandarin speech assessment.
+Mispronunciation detection and diagnosis (MDD) gives language learners phone-level feedback. Extending it
+to a new language usually means collecting and annotating learner speech for that language. X-MDD asks
+whether MDD skills learned from annotated learner speech can carry over to languages never seen in MDD
+training, as long as canonical pronunciation references exist.
 
-> **Qwen3-ASR 中英双语 ICL MDD（canonical dropout 版本）的环境、数据、模型准备与训练步骤见 [README_ZH_EN_ICL.md](README_ZH_EN_ICL.md)。**
+X-MDD is built on Qwen3-ASR-1.7B. For each utterance it receives:
 
-## Results
+- **canonical speech**: the target text synthesized by TTS, cloning the learner's voice;
+- **canonical phones**: the expected phone sequence;
+- **learner speech**: the learner's recording;
+- optionally, **in-context demonstrations**: the same three inputs plus the annotated actual phones.
 
-<table>
-<tr>
-<td width="50%" valign="top">
+It generates the phone sequence the learner actually produced. Aligning that sequence to the canonical
+phones gives detection (which phones are wrong) and diagnosis (what was said instead). Training uses
+supervised fine-tuning followed by GRPO, with a reward that combines detection F1 and phone error rate.
 
-<h3>AISHELL-3 Test Set</h3>
+## Pretrained model
 
-<p>Whisper-Pinyin with cross-augmentation consistency regularization achieves an <b>18.6%</b> relative reduction in token error rate over the Whisper-OTC baseline on the AISHELL-3 test set.</p>
-
-<table>
-<tr>
-<th>Model</th>
-<th align="right">Token error rate</th>
-</tr>
-<tr>
-<td>Whisper-OTC (baseline)</td>
-<td align="right">4.09%</td>
-</tr>
-<tr>
-<td><strong>Whisper-Pinyin</strong></td>
-<td align="right"><strong>3.33%</strong></td>
-</tr>
-</table>
- 
-
-</td>
-<td width="50%" valign="top">
-
-<img src="image/whisper-pinyin-cross6.png" alt="Whisper-Pinyin cross-augmentation architecture" width="430">
-
- 
-</td>
-</tr>
-</table>
-
-Detailed results can be found in
-`results/results_cross_continuous_aishell3_test.txt`
-and 
-`results/results_otc_aishell3_test.txt`
-
-## Demo
-
-[![Open in Spaces](https://img.shields.io/badge/%F0%9F%A4%97%20Open%20Demo-Hugging%20Face%20Space-blue)](https://huggingface.co/spaces/walston/whisper-pinyin-demo)
-[![Model Repo](https://img.shields.io/badge/%F0%9F%A4%97%20Model-walston%2Fwhisper--pinyin-yellow)](https://huggingface.co/walston/whisper-pinyin)
-
-Try Whisper-Pinyin directly in the browser with the hosted Hugging Face Space:
-[**walston/whisper-pinyin-demo**](https://huggingface.co/spaces/walston/whisper-pinyin-demo).
-
-<p align="center">
-  <a href="https://huggingface.co/spaces/walston/whisper-pinyin-demo">
-    <img src="image/whisper-pinyin-demo.gif" alt="Whisper-Pinyin Hugging Face Space demo" width="720">
-  </a>
-</p>
-
-The demo runs the cross-augmentation continuous checkpoint from the
-[walston/whisper-pinyin](https://huggingface.co/walston/whisper-pinyin)
-model repository. On the public **CPU** Space, decoding runs at approximately **RTF 1.76**.
-
-## 🚀 Quick Start
+| Model | Backbone | Inputs | Training | Link |
+|---|---|---|---|---|
+| X-MDD | Qwen3-ASR-1.7B | canonical speech + canonical phones + learner speech | SFT on Mandarin + English → GRPO | [walston/X-MDD](https://huggingface.co/walston/X-MDD) |
 
 ```bash
-git clone https://github.com/oshindow/whisper_pinyin.git
-cd whisper_pinyin
-
-conda create -n whisper-pinyin python=3.8 ffmpeg -y
-conda activate whisper-pinyin
-pip install -r requirements.txt
-pip install pytorch-lightning==2.4.0 --no-deps
-
-python -c "import torch, torchaudio, k2; print(torch.__version__)"
+hf download walston/X-MDD --local-dir pretrained/X-MDD
 ```
 
+Inference loads weights and the processor from `pretrained/X-MDD` without downloading
+Qwen3-ASR backbone weights. If `config.json` is absent, it uses the bundled architecture config.
 
-## 📦 Data Preparation
+## Installation
 
-This repository already provides AISHELL-3 text manifests under:
-
-```text
-dump/aishell3/train/text
-dump/aishell3/val/text
-dump/aishell3/val/text_100
-dump/aishell3/test/text
-```
-
-You only need to prepare the AISHELL-3 audio files. Convert all audio to 16 kHz, 16-bit, mono-channel WAV files and place them with the expected directory layout:
-
-```text
-<data-root>/aishell3/
-  train/wav_16k/<speaker_id>/<utt_id>.wav
-  test/wav_16k/<speaker_id>/<utt_id>.wav
-```
-
-`dump/aishell3/val/text_100` is a 100-utterance validation subset randomly sampled from `dump/aishell3/val/text`.
-
-## 🏋️ Fine-Tuning
-
-Before training, update `DATA_ROOT` and `EXP_DIR` in `run.sh` to match your local paths.
-
-### Run the Default Experiment
-
-The provided `run.sh` launches the Whisper-Pinyin with Cross-augmentation (continuous) experiment:
+Linux x86_64; uses a prebuilt flash-attn wheel.
 
 ```bash
-./run.sh
+conda create -n xmdd python=3.11 -y
+conda activate xmdd
+pip install torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121
+pip install "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3.post1/flash_attn-2.8.3.post1+cu12torch2.5cxx11abiFALSE-cp311-cp311-linux_x86_64.whl"
+pip install -r requirements.txt --no-build-isolation
 ```
 
-Recommended setting for a single NVIDIA RTX A5000 with 24 GB VRAM:
+## Quick start: Arabic example
 
-- Batch size: 16
-- Runtime: approximately 60 minutes per epoch
+`examples/arabic/` holds a small example from the [QuranMB.v2 test set](https://huggingface.co/datasets/IqraEval/QuranMB.v2):
 
-### Baseline: Whisper-OTC
+- `queries.jsonl`: 3 query utterances;
+- `demos.jsonl`: 4 demonstrations from the same speaker;
+- `wav/`: the learner speech and canonical speech (TTS) of each utterance;
+- `phone_symbols.txt`: the Arabic phone set for optional constrained decoding.
 
-Recommended setting for a single NVIDIA RTX A5000 with 24 GB VRAM:
-
-- Batch size: 32
-- Runtime: approximately 30 minutes per epoch
+The canonical
+speech was synthesized with [SILMA TTS](https://huggingface.co/silma-ai/silma-tts). See
+`examples/arabic/LICENSE.md`.
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python scripts/baseline/finetuning_pinyin_otc.py \
-  --epoch 10 \
-  --data-root $DATA_ROOT \
-  --train-name whisper_pinyin_aishell3_otc \
-  --train-id 001 \
-  --exp-dir $EXP_DIR \
-  --train-path dump/aishell3/train/text \
-  --model-name small \
-  --ctc-layers 2 \
-  --n_mels 80 \
-  --batch-size 16 \
-  --precision bf16-mixed \
-  --learning-rate 1e-4 \
-  --weight-decay 0.01 \
-  --adam-epsilon 1e-8 \
-  --warmup-steps 1000 > exp_whisper_otc.log
+python -m xmdd.infer --language ar \
+    --manifest examples/arabic/queries.jsonl --support-manifest examples/arabic/demos.jsonl \
+    --shots 0 4 --out-dir results/ar_example
 ```
- 
- 
 
-## 🔍 Inference
+## Chinese example
 
-Run Whisper-Pinyin inference on the AISHELL-3 test manifest:
+`examples/chinese/` contains 3 queries and 4 demos from the same [LATIC](https://doi.org/10.21227/mtqj-qh10) test speaker,
+with learner speech, CosyVoice3 canonical speech, and tonal-phone annotations.
+All 3 queries and 4 demos have a **Korean accent** (unseen during training).
+The example data is shared under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/);
+see `examples/chinese/README.md` for attribution.
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python inference/inference_pinyin_ctc.py \
-  --checkpoint path/to/your/checkpoint \
-  --test-path dump/aishell3/test/text \
-  --output results_aishell3_test.txt
+python -m xmdd.infer --language zh \
+    --manifest examples/chinese/queries.jsonl --support-manifest examples/chinese/demos.jsonl \
+    --shots 0 4 --out-dir results/zh_example
 ```
 
-Run Wav2Vec2 baseline inference:
+    
+## Acknowledgements
 
-```bash
-CUDA_VISIBLE_DEVICES=0 python inference/inference_pinyin_ctc_w2v.py \
-  --checkpoint path/to/your/checkpoint \
-  --test-path dump/aishell3/test/text \
-  --output results_w2v_aishell3_test.txt
+This project builds on the following open-source work:
+
+- [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-1.7B): model backbone (audio encoder, projector and LLM decoder), loaded through [Hugging Face Transformers](https://github.com/huggingface/transformers)
+- [CosyVoice3](https://github.com/FunAudioLLM/CosyVoice) and [SILMA TTS](https://huggingface.co/silma-ai/silma-tts): canonical speech synthesis
+- GRPO, following [DeepSeekMath (Shao et al., 2024)](https://arxiv.org/abs/2402.03300), and [PyTorch Lightning](https://github.com/Lightning-AI/pytorch-lightning) for training
+
+Please also follow the licenses and terms of use of these projects, models and datasets.
+
+## Citation
+
+```bibtex
+@article{wang2026xmdd,
+  title   = {X-MDD: LLM-Based Mispronunciation Detection and Diagnosis for Unseen Languages with Canonical References},
+  author  = {Wang, Xintong and Zhao, Junchuan and Wang, Ye},
+  journal = {arXiv preprint arXiv:2610.23079},
+  year    = {2026}
+}
 ```
-  
 
-## 📝 Notes for Users
+## License
 
-- This project borrows and adapts a lot of code and ideas from [Whisper](https://github.com/openai/whisper), [k2](https://github.com/k2-fsa/k2), [icefall](https://github.com/k2-fsa/icefall), [SpeechBrain](https://github.com/speechbrain/speechbrain), and [FSQ](https://arxiv.org/abs/2309.15505). Please also follow the licenses and citation guidance of those upstream projects when using this repository.
-- See [LICENSE](LICENSE) for the project license, [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for upstream code notices, and `LICENSES/` for third-party license references.
+The code is released under the [MIT License](LICENSE). The model weights are derived from Qwen3-ASR-1.7B
+and are subject to its license.
